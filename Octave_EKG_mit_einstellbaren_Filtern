@@ -1,0 +1,203 @@
+%
+%  Dies ist eine Octave-Skript zur Darstellung von Daten die über die
+%  serielle Schnittstelle empfangen werden (z.B. ein EKG-Signal).
+%  Die Daten können mit einer Kaskade von digitalen Filtern gefiltert werden.
+%
+%  (c) Jens Bongartz, Januar 2021, RheinAhrCampus Remagen
+%  Stand: 16.01.2021 
+%
+pkg load instrument-control;
+clear all;
+disp('Open SerialPort!')
+#Windows - COM anpassen
+serial_01 = serialport("COM3",115200);
+#MacOSX - Pfad anpassen!
+#serial_01 = serialport("/dev/cu.usbserial-1420",115200); 
+
+configureTerminator(serial_01,"lf");
+flush(serial_01);
+adc_array = [];
+x_index = 0;
+cr_lf = [char(13) char(10)];      %% Zeichenkette CR/LF
+inBuffer = [];                    %% Buffer serielle Schnittstelle
+
+% Digitaler Filter:
+% ===================================================================================
+% HP = Hochpass-Filter mit wählbarer Grenzfrequenz
+% No50 = Notch-Filter 50Hz
+% TP = Tiefpass-Filter mit wählbarer Grenzfrequenz
+% ==================0==============================
+% Filterkoeffizienten
+% Die Filterkoeffizienten für verschiedene Grenzfrequenzen. Die entsprechenden 
+% Koeffizenten werden über ein Popup Menü ausgewählt
+global struct_TP_ko;
+struct_TP_ko = struct ( "none",  [1 2 1 2 1], ...
+                        "Fc_40", [0.20657128726265578 ...
+                                  0.41314257452531156 ...
+                                  0.20657128726265578 ...
+                                 -0.36952595241514796 ... 
+                                  0.19581110146577102], ...                           
+                        "Fc_50", [0.2928920553392428 ...
+                                  0.5857841106784856 ...
+                                  0.2928920553392428 ...
+                                 -1.3007020142696517e-16 ...
+                                  0.17156822135697122]);
+global struct_HP_ko;
+struct_HP_ko = struct ( "none", [1 -2 1 -2 1], ...
+                        "Fc_01", [0.9780302754084559 ... 
+                                 -1.9560605508169118 ...
+                                  0.9780302754084559 ...
+                                 -1.9555778328194147 ...
+                                  0.9565432688144089], ...
+                        "Fc_02", [0.956542835577484 ...
+                                 -1.913085671154968 ...
+                                  0.956542835577484 ...
+                                 -1.911196288237583 ...
+                                  0.914975054072353]);                        
+
+
+global HP_ko = struct_HP_ko.("none");
+global No50_ko = [ 0.5857841106784856 -1.3007020142696517e-16 0.5857841106784856 ...
+                  -1.3007020142696517e-16 0.17156822135697122 ];
+global TP_ko = struct_TP_ko.("none");
+
+% Filterstufen
+global HP_sp =   [0 0 0 0 0 0];                    % Filter-Speicher
+global No50_sp = [0 0 0 0 0 0];                    % Filter-Speicher
+global TP_sp =   [0 0 0 0 0 0];                    % Filter-Speicher
+% Checkbox-Variablen
+global No50_filtered = 0;
+% Filterimplementierung
+function [adc,sp] = digitalerFilter(adc,sp,ko);
+   sp(3) = sp(2); sp(2) = sp(1); sp(1) = adc; sp(6) = sp(5) ; sp(5) = sp(4);
+   sp(4) = sp(1)*ko(1)+sp(2)*ko(2)+sp(3)*ko(3)-sp(5)*ko(4)-sp(6)*ko(5);
+   adc   = sp(4);  
+endfunction
+% ======================================================================================
+% Low-Level-Plotting
+% ====================
+fi_1 = figure(1);
+clf
+ax_1 = axes("box","on","xlim",[1 600]); %,"ylim",[-500 500]);
+li_1 = line("color","blue");
+
+% GUI-Elemente
+% ============
+
+% Hochpass Popup Menu mit Text
+% =====================================================================================
+txt_HP = uicontrol(fi_1,"style","text","string","Hochpass:","position",[10,10,80,30]);
+
+global pm_HP;
+pm_HP = uicontrol(fi_1,"style","popupmenu","string",fieldnames(struct_HP_ko), ...
+                    "callback","pm_HP_changed","position",[90,10,70,30]);
+
+function pm_HP_changed;
+   global pm_HP;
+   global struct_HP_ko;
+   global HP_ko;
+   global HP_sp;
+   
+   HP_sp = [0 0 0 0 0 0];      % notewendiger Reset der Filter-Speicher
+                               % bei Änderung der Koeffizienten
+   HP_Index = get (pm_HP, "string"){get (pm_HP, "value")}
+   HP_ko = struct_HP_ko.(HP_Index)
+endfunction
+
+% "Notch 50Hz" Checkbox
+% =====================================================================================
+cb_No50 = uicontrol(fi_1,"style","checkbox","string","Notch 50Hz", ...
+                    "callback","cb_No50_changed","position",[200,10,100,30]);
+
+function cb_No50_changed;
+  global No50_filtered;
+  No50_filtered = not(No50_filtered);
+endfunction
+
+% Tiefpass Popup Menu mit Text
+% =====================================================================================
+txt_TP = uicontrol(fi_1,"style","text","string","Tiefpass:","position",[340,10,80,30]);
+
+global pm_TP;
+pm_TP = uicontrol(fi_1,"style","popupmenu","string",fieldnames(struct_TP_ko), ...
+                  "callback","pm_TP_changed","position",[420,10,100,30]);
+
+function pm_TP_changed;
+   global pm_TP;
+   global struct_TP_ko;
+   global TP_ko;
+   
+   global TP_sp = [0 0 0 0 0 0];                      % Filter-Speicher
+   
+   TP_Index = get (pm_TP, "string"){get (pm_TP, "value")}
+   TP_ko = struct_TP_ko.(TP_Index)
+endfunction
+% Quit-Button 
+%% (der Button ist jetzt erst sichtbar, wenn das Fenster (fi) vergrößert wird)
+% =====================================================================================
+Quit_Button = uicontrol(fi_1,"style","pushbutton","string","Quit",...
+                        "callback","Quit_Button_pressed","position",[600,10,100,30]);
+
+function Quit_Button_pressed
+  global quit_prg;
+  quit_prg = 1;
+endfunction
+% ====================================================================================
+
+global quit_prg;
+quit_prg = 0;
+drawnow();
+
+% ============================
+
+disp('Wait for data!')
+do
+until (serial_01.NumBytesAvailable > 0);
+
+do
+   bytesavailable = serial_01.NumBytesAvailable;
+   
+   if (bytesavailable > 0)
+     %% Zeilenende (println) ist ASCII Kombination 13 10
+     %% char(13) = CR char(10) = LF
+     inSerialPort = char(read(serial_01,bytesavailable)); %% Daten werden vom SerialPort gelesen
+     inBuffer     = [inBuffer inSerialPort];              %% und an den inBuffer angehängt
+     posCRLF      = rindex(inBuffer, cr_lf);              %% Test auf CR/LF im inBuffer 
+     if (posCRLF > 0)          
+        % tic
+        inChar   = inBuffer(1:posCRLF-1);
+        inChar   = inChar(~isspace(inChar));              %% Leerzeichen aus inChar entfernen
+        inBuffer = inBuffer(posCRLF+2:end);        
+        inNumbers = strsplit(inChar,{'ADC:'});
+        count = length(inNumbers);
+        for i = 2:1:count                                 %% erste Element bei strsplit ist ´hier immer
+           adc = str2num(inNumbers{i});
+           [adc,HP_sp] = digitalerFilter(adc,HP_sp,HP_ko); %% if ist nicht mehr notwendig, da immer gefiltert wird
+           if (No50_filtered) 
+                [adc,No50_sp] = digitalerFilter(adc,No50_sp,No50_ko);
+           endif                
+           [adc,TP40_sp] = digitalerFilter(adc,TP_sp,TP_ko); %% if ist nicht mehr notwendig, da immer gefiltert wird
+           adc_array(end+1)=adc;
+           x_index++;
+        endfor
+        % Low-Level-Plotting
+        % ==================
+        if (x_index > 600)
+           x_axis = x_index-600:x_index;
+           adc_plot = adc_array(x_index-600:x_index);
+           axis([x_index-600 x_index]);
+        else
+           x_axis = 1:x_index;
+           adc_plot = adc_array;
+        endif
+        set(li_1,"xdata",x_axis,"ydata",adc_plot);
+        drawnow();
+        % toc
+     endif
+   endif     
+   if (kbhit(1) == 'x')
+     quit_prg = 1;
+   endif
+until(quit_prg);    %% Programmende wenn x-Taste gedrückt wird
+
+clear serial_01;
